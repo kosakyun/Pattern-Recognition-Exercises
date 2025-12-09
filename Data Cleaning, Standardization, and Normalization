@@ -1,0 +1,125 @@
+import pandas as pd
+
+# Dataset was a simulation of the titanic with a feature column listing whether they survived or not
+df_raw = pd.read_csv("titanic_train.csv")
+df_raw
+
+# display raw dataframe
+
+# next section focuses on dropping features that do not influence the result AND the target result column (y) itself
+drop_columns = ["PassengerId", "Name", "Ticket", "Cabin", "Survived"]
+df_clean = df_raw.drop(columns=drop_columns)
+df_clean
+
+# display remaining columns of dataframe
+
+# check for null or empty cells
+df_clean.isnull().sum()
+
+# isolate rows that had null or empty cells in preparation for cleaning
+df_missing_rows = df_clean[df_clean.isnull().any(axis=1)]
+df_missing_rows
+
+# display isolated rows
+
+# IMPUTATION --------------------------------------------
+# create a class object for imputing missing values in Age column
+class AgeImputer:
+# standard way of defining in-class functions is through initialization, fit, and transform
+  def __init__(self,strategy):
+    self.strategy = strategy 
+    # strategy here is used as a filter for if clause later on
+  def fit(self, df):
+    self.none_missing = df.loc[df["Age"].notna()]
+    return self
+    # fit function uses filled "Age" column as a basis for imputation
+  def transform(self,df):
+    out = df.copy()
+    if self.strategy == "mean":
+      out["Age"] = out["Age"].fillna(self.none_missing["Age"].mean())
+    else:
+      out["Age"] = out["Age"].fillna(self.none_missing["Age"].median())
+    return out
+    # mean and median of filled "Age" column functions as imputation for        null or missing data entries in the same column
+  def fit_transform(self, df):
+    return self.fit(df).transform(df)
+
+imputer1 = AgeImputer("mean")
+df_clean_mean = imputer1.fit_transform(df_clean)
+print(df_clean_mean)
+
+imputer2 = AgeImputer("median")
+df_clean_median = imputer2.fit_transform(df_clean)
+df_clean_median
+
+# Imputation mostly works for features that are easily computable through standard measures of central tendencies
+
+# If categorical values that cannot express equidistance using numbers, you need to use One-Hot Encoding
+
+# ONE-HOT ENCODING ----------------------------------------------
+# Isolate categorical or non-numeric columns from dataset
+categorical_columns = df_clean_median.select_dtypes(include=["object","category","string","bool"]).columns.tolist()
+
+print(categorical_columns)
+
+# display list of categorical columns
+
+# get_dummies() from pandas create multiple columns based on a categorical feature to make it possible to process through data analysis techniques
+# For example, if you had a choice for yes, no, and maybe, they would create three columns to symbolize it by doing 1 0 0 for yes, 0 1 0 for no, and 0 0 1 for maybe
+df_numeric = pd.get_dummies(df_clean_median, columns=categorical_columns, drop_first=False, dtype=int)
+df_numeric
+
+# display expanded dataframe with one-hot encoded columns
+
+# NORMALIZATION AND STANDARDIZATION --------------------------------------
+# For datasets with numerical values that have great differences in terms of absolute magnitudes, normalization and standardization is important to avoid bias resulting from differences in raw values
+
+# create an overall class object for succeeding scaler classes to inherit
+from sklearn.preprocessing import MinMaxScaler, StandardScaler
+
+# mostly a dummy class that serves as proof of concept
+class BaseScaler:
+  def fit(self, df):
+    pass
+  def transform(self, df):
+    pass
+  def fit_transform(self, df):
+    return self.fit(df).transform(df)
+
+# uses minmax scaling with a specific feature range for normalization
+class MinMaxScalerWrapper(BaseScaler):
+  def __init__(self, feature_range=(0,1)):
+    self.feature_range = feature_range
+    self.scaler = MinMaxScaler(feature_range=feature_range)
+  def fit(self, df):
+    self.columns = df.columns.tolist()
+    self.scaler.fit(df.values)
+    return self
+  def transform(self, df):
+    x_transform = self.scaler.transform(df[self.columns].values)
+    out = pd.DataFrame(data = x_transform, columns=self.columns, index=df.index)
+    return out
+
+# variation of previous class but using standard scaling
+class StandardScalerWrapper(BaseScaler):
+  def __init__(self):
+    self.scaler = StandardScaler()
+  def fit(self, df):
+    self.columns = df.columns.tolist()
+    self.scaler.fit(df.values)
+    return self
+  def transform(self, df):
+    x_transform = self.scaler.transform(df[self.columns].values)
+    out = pd.DataFrame(data = x_transform, columns=self.columns, index=df.index)
+    return out
+
+# honestly the classes feel like they can work without the BaseScaler parent class, but might need additional confirmation because I'm not confident enough to say that with certainty at the moment of writing this
+# specifically it feels like there was no need to call fit and transform functions under the fit and transform functions of the MinMax and Standard Scalers because the parent class only has them as pass functions so there's nothing to call from the inherited class (I think)
+# using raise NotImplementedError as the definition for the BaseScaler's functions might be more useful as it enforces a strict compliance to a standard function calling template, such as requiring fit() and transform() to avoid mishaps with fit_transform()
+
+scaler = MinMaxScaler()
+# or
+scaler = StandardScalerWrapper()
+
+# further information: https://www.datacamp.com/tutorial/normalization-vs-standardization
+# Normalization is widely used in distance-based algorithms like k-Nearest Neighbors (k-NN), where features must be on the same scale to ensure accuracy in distance calculations. Standardization, on the other hand, is vital for gradient-based algorithms such as Support Vector Machines (SVM) and is frequently applied in dimensionality reduction techniques like PCA, where maintaining the correct feature variance is important.
