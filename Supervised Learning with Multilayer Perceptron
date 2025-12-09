@@ -1,0 +1,196 @@
+import pandas as pd
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.utils.data import Dataset, DataLoader, random_split
+import numpy as np
+from sklearn.metrics import confusion_matrix, accuracy_score, recall_score, precision_score, f1_score
+import matplotlib.pyplot as plt
+
+df_titanic = pd.read_csv("titanic_train_minmax_scaled.csv")
+df_electric = pd.read_csv("electric_production.csv")
+
+df_titanic
+
+# display minmax scaled dataframe
+
+# create a class object specifically for converting the titanic dataset into tensors that can be fed into a neural network by inheriting the Dataset parent class from pytorch
+class TitanicDataset(Dataset):
+  def __init__(self, df):
+    self.df = df
+    # using the equation f(x) = y, need to define input features x and output y
+    # based on Dataset class in pytorch, x will have the shape of (num_samples, num_features)
+    self.x = torch.tensor(df.drop(columns="Survived").values, dtype=torch.float32) 
+    # self.labels converts Survived column data into integer (long dtype is standard for class indices in pytorch classification)
+    self.labels = torch.tensor(df["Survived"].values, dtype=torch.long)
+    # torch.zeros will create a tensor full of zeros according to shape (num_samples, 2) for the one-hot coding of "Survived" column
+    self.y = torch.zeros((len(df), 2), dtype=torch.float32) 
+    # torch.arange will create indices that serve as references for which column to update with the value 1 given two feature classes (defined by self.labels)
+    # since we have survived and didn't survive as the possible y values, row 0, 0 will be [0, 1] if self.labels = 1 or [1, 0] if self.labels = 0
+    self.y[torch.arange(len(self.labels)), self.labels] = 1.0 # one way of one-hot encoding with tensors
+
+  def __len__(self):
+    return len(self.x)
+    # represents how many samples are in the dataset for reference
+
+  def __getitem__(self, idx):
+    return (self.x[idx], self.y[idx])
+    # returns sample of dataset (row) with corresponding input features tensor (self.x) and results/label tensor (self.y) by using index
+    # this is for reference of DataLoader
+
+# fit dataframe into Dataset function in preparation for feeding into neural network
+dataset = TitanicDataset(df_titanic)
+
+# create a class object for the neural network
+class TitanicNeuralNetwork(nn.Module):
+  def __init__(self):
+    super().__init__() # calls the constructor of the parent (required for pytorch to register neural network layers)
+    self.input_to_h1 = nn.Linear(10,8) # represents connections between each layer
+    self.h1_to_h2 = nn.Linear(8,6)
+    self.h2_to_output = nn.Linear(6, 2) # output is size 2 because two possible outcomes (survived/not survived)
+    self.sigmoid = nn.Sigmoid() # activation function used per transformation
+
+  # [Batch_size, Dimension] is expected
+  # example: x --> [5, 10] - -> [5,2]
+
+  def forward(self, x): 
+  # feed forward or inferencing; all modules have their own forward()
+  # defines how data flows through the network
+    x = self.input_to_h1.forward(x)
+    x = self.sigmoid.forward(x) # first transformation
+
+    x = self.h1_to_h2.forward(x)
+    x = self.sigmoid.forward(x) # second transformation
+
+    x = self.h2_to_output.forward(x)
+    x = self.sigmoid.forward(x) # third transformation
+
+    return x
+    # alternatively, can use x = self.sigmoid(x)
+
+network = TitanicNeuralNetwork()
+
+# test a random input of tensor(5,10) for neural network functionality
+sample_input = torch.rand((5,10))
+y = network.forward(sample_input)
+
+print(y.shape)
+print(y)
+
+# display torch.size
+# display tensor values for y 
+
+loss_fn = nn.CrossEntropyLoss() 
+# loss function; CrossEntropyLoss is commonly used for multi-class classification problems
+# should have used ReLU instead of Sigmoid since CrossEntropyLoss expects raw logits
+learning_rate = 0.1 # hyperparameter for updating weights (c/o optimizer)
+optimizer = optim.Adam(network.parameters(), lr=learning_rate) # optimizer; calls the instance of neural network to use as parameters for training (weights and biases)
+# formula for optimizer: new_weights = old_weights − learning_rate * gradient
+loader = DataLoader(dataset, batch_size=10, shuffle=False) 
+# pytorch function that helps wrap a dataset for training iterations using mini-batches; parameters are (data, batch size, and shuffle)
+# shuffling determines whether or not dataloader loads data in the same order each epoch (shuffle = True if dataset is not dependent on ranking or chronological order
+
+# define training function to use for neural network per epoch/run
+def train_fn(model, loader, optimizer, loss_fn):
+  model.train() # pytorch function that puts model into training mode
+
+  ave_loss = 0.0 # for accumulating total loss
+  count = 0 # number of batches run
+
+  for (x,y) in loader: # DataLoader
+    predictions = model.forward(x) 
+    # runs batch through neural network to produce predictions (logits)
+    loss = loss_fn(predictions, y)
+    # computes for loss using a specific loss function declared earlier
+    # returns scalar value
+
+    # three line back propagation process
+    optimizer.zero_grad() \
+    # clears old gradients before computing new ones
+    loss.backward() 
+    # computes loss gradient vs. network parameters and stores in parameters' .grad attributes
+    # main learning loop
+    optimizer.step() 
+    # calls Adam and tells it to go to next step by updating model weights
+
+    ave_loss += loss.item() # extracts python float from tensor
+    count += 1
+
+  ave_loss = ave_loss/count
+
+  return ave_loss
+
+# define evaluation function to use for neural network per epoch/run
+# usually used on a validation/test dataset that can be created via train_test_split() from sklearn
+def evaluate(model, loader):
+  model.eval() # put the model in evaluation mode
+
+  predictions = []
+  targets = []
+
+  for (x_validation, y_validation) in loader:
+    y_predictions = model.forward(x_validation)
+    # [10,2] --> [10,1] for scikit.learn
+
+    y_predictions = y_predictions.argmax(dim=1) 
+    # turns output into vector of predicted class index
+    # tensor(batch size, 2) turns into tensor(1, 2) based on output size = 2 for survival
+    y_targets = y_validation.argmax(dim=1).cpu().numpy() 
+    # converts one-hot encoded labels to class index
+    # converts tensor to numpy array to store value per batch to list
+
+    predictions.extend(y_predictions)
+    targets.extend(y_targets)
+    # output for both variables is a list of predictions and validations from their respective datatest splits
+
+  f1 = f1_score(predictions, targets) # an evaluation value
+
+  return f1
+
+# run a test on the neural network
+epochs = 1000 # number of batches/runs
+
+losses=[]
+f1_scores=[]
+
+for epoch in range(epochs):
+  ave_loss = train_fn(network, loader, optimizer, loss_fn) 
+  # call earlier train function; uses training test split
+  f1 = evaluate(network, loader) 
+  # call evaluation function; uses validation test split
+
+  losses.append(ave_loss) # for adding all values into a pre-existing list
+  f1_scores.append(f1) # same as above
+  # both lists will be useful for tracking model performance through trends or graphs
+
+  print(f"Epoch: {epoch+1} Loss: {ave_loss} F1: {f1}")
+
+# something to note for the above code block: it doesn't use train_test_split() from sklearn, so the parameter was mainly loader defined earlier as DataLoader()
+# if using train_test_split(), would use train_dataset for train_fn and val_dataset for evaluate() per epoch, then test_dataset for one more evaluate() after model training
+
+# graphically represent performance or model behavior through trend
+epoch_elements = np.arange(1, epochs+1) 
+# epoch elements to represent x axis
+
+# plot loss
+
+plt.figure()
+plt.plot(epoch_elements, losses, label="Loss")
+# losses listed per epoch, so using arange to track per epoch (+1 because range) allows assignment of loss value to the specific batch it was used on
+plt.xlabel("Epoch")
+plt.ylabel("Loss")
+plt.title("Loss over Epoch")
+plt.show()
+
+# display graph of loss over epoch
+
+# Plot f1
+plt.figure()
+plt.plot(epoch_elements, f1_scores, label = "F1")
+# same as above for f1_scores
+plt.xlabel("Epoch")
+plt.ylabel("F1")
+plt.title("F1 over Epoch")
+plt.show()
+
+# display graph of f1 score over epoch
