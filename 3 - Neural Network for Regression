@@ -1,0 +1,217 @@
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+import pandas as pd
+import matplotlib.pyplot as plt
+
+# regression dataset on electric production
+df = pd.read_csv("https://happy-research.s3.ap-southeast-1.amazonaws.com/toy-datasets/electric_production.csv")
+field_name = "IPG2211A2N"
+df
+
+# create dataset class to define regression template for neural network processing
+class CustomTimeSeriesDataset(Dataset):
+  def __init__(self, data, window_length, num_outputs, stride):
+    self.data = data
+    self.window_length = window_length # batch size
+    self.num_outputs = num_outputs # output size 
+    self.stride = stride # steps between each batch
+    self.num_samples = (data.shape[0] - window_length - num_outputs) // stride + 1 # number of possible samples in the dataset given set of parameters
+
+  def __len__(self):
+    return self.num_samples 
+    # can also put the num_samples here
+    # __len__ is mainly for defining how many samples there are in the dataset like in the earlier supervised learning
+
+  def __getitem__(self, idx):
+    start_idx = idx * self.stride # reference point for regression testing
+    x = self.data[start_idx : start_idx + self.window_length] # range of sample batch
+    y = self.data[start_idx + self.window_length : start_idx + self.window_length + self.num_outputs] # range of output batch
+
+    return x, y
+
+# testing with preset parameters
+window_length = 10
+num_outputs = 3
+stride = 1
+
+# convert regression column into values for preparation to feed into neural network
+data_tensor = torch.tensor(df[field_name].values, dtype=torch.float32)
+
+# fit data values into time series dataset in preparation for pytorch
+time_series_dataset = CustomTimeSeriesDataset(data_tensor, window_length, num_outputs, stride)
+
+# quick way of splitting dataset into input features and output features
+# uses window length for x and num outputs for y
+# idx is the input parameter and is set at 0 to start from beginning
+sample_1_x, sample_1_y = time_series_dataset[0]
+print(sample_1_x)
+print(sample_1_y)
+
+# next code block uses a list of sample indices to create three graphs with for loop
+sample_indices = [0, 9, 19]
+
+for idx in sample_indices:
+  x, y = time_series_dataset[idx]
+
+  plt.figure(figsize=(10, 4))
+  plt.plot(range(len(x)), x.cpu().numpy(), label="Input (x)")
+  plt.plot(range(len(x), len(x) + len(y)), y.cpu().numpy(), label="Output (y)")
+  plt.xlabel("Time Steps")
+  plt.ylabel(field_name)
+  plt.legend()
+  plt.grid(True)
+  plt.show()
+
+# display time_series_dataset[0] plot
+# display time_series_dataset[9] plot
+# display time_series_dataset[19] plot
+
+# split time_series_dataset into training and validation dataset for prediction model training
+size_train = int(0.8 * len(time_series_dataset))
+size_val = len(time_series_dataset) - size_train
+
+train_dataset, val_dataset = torch.utils.data.random_split(time_series_dataset, [size_train, size_val])
+
+print(f"Num Train: {len(train_dataset)}")
+print(f"Num Val: {len(val_dataset)}")
+# alternatively, we could have split it further by also computing for test_size and then incldung it in the torch.utils.data.random_split() parameters
+# for example (with the help of the math python library):
+# n = len(time_series_dataset)
+# train_size = int(0.7 * n)
+# val_size = int(0.15 * n)
+# test_size = n - train_size - val_size
+
+# create a class object for the regression model using nn.Module as parent class
+class SimpleRegressionModel(nn.Module):
+  def __init__(self, input_size, output_size):
+    super().__init__()
+
+    # input_size --> 64 --> output_size
+    self.input_to_hidden = nn.Linear(input_size, 64)
+    self.hidden_to_output = nn.Linear(64, output_size)
+
+    # activation function
+    self.relu = nn.ReLU()
+
+  def forward(self, x):
+    x = self.input_to_hidden.forward(x)
+    x = self.relu(x)
+
+    x = self.hidden_to_output.forward(x)
+    # ReLU outputs raw logits so no need to re-activate at final layer
+
+    return x
+
+    # purpose of a regression problem is to get a real number, so no transformations as a result of the neural network
+    # this means do not activate it
+
+model = SimpleRegressionModel(window_length, num_outputs)
+
+# define the loss function
+loss_fn = nn.MSELoss()
+# MSELoss uses mean squared error between input and target useful for regression
+
+optimizer = torch.optim.Adam(model.parameters(), lr=0.001)
+
+# define the DataLoader for each dataset
+# no shuffle because it's a regression problem, so chronological order matters
+batch_size = 32
+
+train_dataloader = DataLoader(train_dataset, batch_size = batch_size, shuffle=False)
+
+val_dataloader = DataLoader(val_dataset, batch_size=batch_size, shuffle=False)
+
+# define the training function
+def train_fn(model, optimizer, loss_fn, train_dataloader, val_dataloader):
+  model.train()
+
+  ave_loss = 0.0
+
+  for (x, y) in train_dataloader:
+    predictions = model.forward(x)
+
+    loss = loss_fn(predictions, y)
+
+    ave_loss += loss.item()
+
+    # optimizes the weights
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
+
+  ave_loss = ave_loss / len(train_dataloader)
+
+  val_loss = 0.0
+
+  # Model is frozen
+  # This is technically the evaluation function but it's nested within the training function
+  # Can probably define it separately?
+  model.eval()
+
+  for (x, y) in val_dataloader:
+    predictions = model.forward(x)
+
+    loss = loss_fn(predictions, y)
+
+    val_loss += loss.item()
+  # it's recommended to use with torch.no_grad() to wrap the for loop, but will have to confirm
+
+  val_loss = val_loss / len(val_dataloader)
+
+  return ave_loss, val_loss
+
+# train the model
+epochs = 100
+
+for epoch in range(epochs): 
+  # train_fn takes two dataloaders because eval function is nested within
+  ave_loss, val_loss = train_fn(model, optimizer, loss_fn, train_dataloader, val_dataloader)
+
+  print(f"Epoch [{epoch+1}/{epochs}]: Ave: {ave_loss} Val: {val_loss}")
+
+# visualize results of the model using future steps
+num_future_steps = 200
+
+model.eval()
+
+predicted_sequence = data_tensor.tolist() # should be made up of the original dataset + the future steps in predicted output
+
+add_noise = True # equivalent to temp in GenAI
+
+noise_std = 5.0 # allows us to sample from predicted function and add it onto the result
+
+for _ in range(num_future_steps):
+  input_sequence = torch.tensor(predicted_sequence[-window_length:], dtype=torch.float32) # you want the last window length of the predicted sequence to be the basis for future steps
+
+  predicted_output = model.forward(input_sequence)
+
+  if add_noise:
+    noise = torch.randn_like(predicted_output) * noise_std
+
+    predicted_output = predicted_output + noise
+
+  predicted_sequence.extend(predicted_output.tolist())
+  # this attaches the predicted_output to the tail end of the initial data tensor
+
+# plot the overall graph alongside predicted output
+plt.figure(figsize=(14, 7))
+
+# Plot the original data
+
+# start plot range from end of original dataset
+plt.plot(range(len(data_tensor)), data_tensor.numpy(), label="Original Data")
+
+# Plot the predicted future
+
+plt.plot (
+    range(
+        len(data_tensor) - 1,
+        len(predicted_sequence)
+      ),
+      predicted_sequence[len(data_tensor) - 1:],
+      label="Predicted Future",
+    linestyle="--"
+) # both x and y here are the same more or less, just different ways of presenting range(len(data_tensor) - 1, len(predicted_sequence))
+
+plt.show()
