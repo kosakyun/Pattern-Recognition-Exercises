@@ -1,0 +1,118 @@
+import pandas as pd
+import numpy as np
+import plotly.express as px
+import matplotlib.pyplot as plt
+from sklearn.cluster import KMeans
+
+# dataset with 3d clusters
+df = pd.read_csv('https://happy-research.s3.ap-southeast-1.amazonaws.com/example-3d-clusters.csv')
+df
+
+# display dataframe with 3 features x y z
+
+# perform clustering using kmeans with arbitrary cluster number 3 (k = 3)
+# this creates clusters named 0, 1, and 2
+clusters = 3
+
+kmeans = KMeans(n_clusters=clusters, random_state=42) 
+# creates an unfitted KMeans model
+
+# isolate the columns to be used for clustering
+df['cluster'] = kmeans.fit_predict(df[['x', 'y', 'z']])
+# df['cluster'] stores a new column called cluster to store labels in
+df
+
+# display updated dataframe with clusters column
+
+# display centroids of each cluster
+kmeans.cluster_centers_ # (k clusters, n features)
+
+# display centroids of shape (3, 3)
+# looks like this:
+# [
+#  [center_x1, center_y1, center_z1],   # cluster 0 center
+#  [center_x2, center_y2, center_z2],   # cluster 1 center
+#  [center_x3, center_y3, center_z3]    # cluster 2 center
+# ]
+
+# display centroids' x coordinates
+# i in [:, i] corresponds to the column index with 0 being the first column
+# results in an array of shape (3, 1)
+kmeans.cluster_centers_[:, 0]
+
+# display centroids' x coordinates
+# example would be array([8.1252418 , 5.19441199, 1.97030786])
+
+# visualize clusters in a 3d plane
+fig = px.scatter_3d(
+    df,
+    x='x', y='y', z='z',
+    color=df['cluster'].astype('str'),
+    opacity=0.8
+)
+# parameters are data, x axis, y axis, z axis, color based on cluster label converted to string to qualify as categorical labels, and degree of opacity
+
+# add cluster centers to plot
+centers = kmeans.cluster_centers_
+fig.add_scatter3d(
+    x=centers[:, 0],
+    y=centers[:, 1],
+    z=centers[:, 2],
+    marker=dict(size=10, color='red', symbol='x'),
+    mode='markers'
+)
+# parameters are x coordinates of cluster centers, y coordinates, z coordinates (similar to kmeans.cluster_centers_[;, i]), and marker styling (size, color, symbol), and mode to specifically display points
+
+fig.show()
+
+# display interactive 3d visualization of clustering for the dataset
+
+# compute for K-means clustering errors (WCSS or Whitin-Cluster Sum of Squares)
+df['error'] = np.linalg.norm(df[['x', 'y', 'z']].values - centers[df['cluster']], axis=1) ** 2
+# formula for error is literally subtracting point coordinates from cluster centroid using Euclidean distance and squaring it
+
+# group all rows according to cluster and compute in-cluster sum of squared errors
+cluster_errors = sum(df.groupby('cluster')['error'].sum())
+# also equivalent to kmeans.inertia_
+
+total_error = df['error'].sum() # simpler version of sum of cluster errors
+
+total_error # identical to WCSS
+
+# to identify best cluster number, total error needs to be minimum value possible across k values
+# create a code block that allows the computation of kmeans.inertia_ across different k values 
+x = df[['x', 'y', 'z']].values
+errors = [] # for storing K-means inertia or WCSS
+delta = [0] # for storing relative error reduction per additive k (k -> k+1)
+k_range = range(1, 11) # test k = 1 to k = 10
+
+for k in k_range: # computes inertia per k
+  kmeans = KMeans(n_clusters=k, random_state=42)
+  kmeans.fit(x)
+  errors.append(kmeans.inertia_)
+# inertia will always go down as k goes up, so elbow method is necessary
+
+for k in range(1, len(errors)): # computes delta per k step
+  delta_k = (errors[k-1] - errors[k]) / errors[k-1]
+  delta.append(delta_k)
+# returns % of change between current k and previous k
+
+print(delta)
+
+# display delta per k value
+
+fig, ax1 = plt.subplots(figsize=(8, 5))
+
+# plot line for inertia values
+ax1.plot(k_range, errors, color='blue')
+# should look like a typical elbow curve with a steep drop at first
+
+# plot line for improvement in delta
+ax2 = ax1.twinx()
+ax2.plot(k_range, delta, color='orange')
+# should have a steep rise and drop into a plateau at some point
+
+plt.show()
+
+# two intersecting lines which should show diminishing returns at some point
+# in this case, it seems to be k = 4
